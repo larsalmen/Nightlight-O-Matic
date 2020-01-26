@@ -40,7 +40,7 @@ To check the current schedule and time, browse to /time
 ## Why I made this, you ask?
 
 Well, my kids keep waking up at ungodly hours, wandering into my bedroom and waking me and my wife just to ask "Is it morning?".
-Since they can´t read the clock yet, now they can just glance up at the soooothing red light coming from the Nightlight-O-Matic and roll-over and go back to sleep.
+Since they can´t read the clock yet, now they can just glance up at the soooothing red light coming from the Nightlight-O-Matic and roll-over and go back to sleep. (Or, if its shining bright and blue, come wake me up).
 
 Changelog:
 
