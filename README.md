@@ -44,6 +44,6 @@ Since they can´t read the clock yet, now they can just glance up at the sooooth
 
 ## Changelog:
 
-Version 1.1.0 - Re-wrote basically everything to better handle alarms. Used to many alarms (and RAM) previously, causing some alarms to not be saved.
-Version 1.0.0 - Initial commit.
+- Version 1.1.0 - Re-wrote basically everything to better handle alarms. Used to many alarms (and RAM) previously, causing some alarms to not be saved.
+- Version 1.0.0 - Initial commit.
 
