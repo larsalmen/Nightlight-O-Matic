@@ -42,6 +42,8 @@ To check the current schedule and time, browse to /time
 Well, my kids keep waking up at ungodly hours, wandering into my bedroom and waking me and my wife just to ask "Is it morning?".
 Since they can´t read the clock yet, now they can just glance up at the soooothing red light coming from the Nightlight-O-Matic and roll-over and go back to sleep. (Or, if its shining bright and blue, come wake me up).
 
-Changelog:
+## Changelog:
 
+Version 1.1.0 - Re-wrote basically everything to better handle alarms. Used to many alarms (and RAM) previously, causing some alarms to not be saved.
 Version 1.0.0 - Initial commit.
+
