@@ -2,8 +2,8 @@
     Name    : Nightlightomatic
     Author  : Lars Almén
     Created : 2020-01-20
-    Last Modified: 2020-01-26
-    Version : 1.0.0
+    Last Modified: 2020-02-01
+    Version : 1.1.0
     Notes   : An ESP controlled nightlight, that toggles output pins depending on a set schedule.
               Schedule is exposed through an html gui, served by a http server running on the ESP. Settings are persisted on (emulated) EEPROM.
     License : This software is available under MIT License.
@@ -33,8 +33,11 @@
 // Schedule
 struct Schedule
 {
-  String start;
-  String end;
+  int timerIds[4];
+  int startHour;
+  int startMinute;
+  int endHour;
+  int endMinute;
 };
 
 struct ScheduleContainer
@@ -42,15 +45,25 @@ struct ScheduleContainer
   bool persistedInEEPROM;
   bool initialized;
   bool dstActive;
-  Schedule weekDay;
-  Schedule weekNight;
+  Schedule day;
+  Schedule night;
   Schedule weekendDay;
   Schedule weekendNight;
-  int timerIds[28];
   int dayIntensity;
   int nightIntensity;
-  int usedTimers;
 };
+
+typedef enum
+{
+  dayStart,
+  dayEnd,
+  nightStart,
+  nightEnd,
+  weekendDayStart,
+  weekendDayEnd,
+  weekendNightStart,
+  weekendNightEnd
+} scheduleType_t;
 
 // Wifi settings
 const char *ssid = "";
@@ -71,7 +84,7 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
 
 // HTTP Server settings
-const char *superSecretPassword = "";
+const char *superSecretPassword = "zuul";
 ESP8266WebServer server(80);
 
 // Function prototypes for HTTP handlers
@@ -85,18 +98,20 @@ void getDebug();
 #endif
 
 // Other declarations
-void setSchedule(String nightStart, String nightEnd, String dayStart, String dayEnd, bool dst, String weekendDayStart = "", String weekendDayEnd = "", String weekendNightStart = "", String weekendNightEnd = "");
+void setSchedule(Schedule day, Schedule night, bool dst, Schedule weekendDay, Schedule weekendNight);
 void printScheduleAndTime();
 void startNight();
 void endNight();
 void startDay();
 void endDay();
-void clearOldTimers(int timerIds[], int usedTimers);
+void clearOldTimers(int timerIds[], int size);
 void readSavedSettings(int eepromAdress);
 bool saveSettings(int eepromAdress, ScheduleContainer state);
 bool serverHasRequiredArgs();
 bool serverHasOptionalArgs();
 void setAlarms(bool weekendActive);
+String getFormattedHourMinuteConcatenation(scheduleType_t scheduleType);
+void setTimerState();
 
 const int nightPin = D1;
 const int dayPin = D2;
@@ -149,6 +164,14 @@ void loop()
   {
     // Save last run
     previousMillis = currentMillis;
+    Alarm.delay(10);
+
+    // Enable or disable timers deending on day and if weekend is active.
+    if (activeSchedules.initialized && activeSchedules.weekendDay.startHour != -1)
+    {
+      setTimerState();
+    }
+
     // Update from NTP and setup stuff needed for timers and whatnot.
     timeClient.setTimeOffset(utcOffsetInSeconds + dstOffsetInSeconds);
     timeClient.update();
@@ -165,7 +188,7 @@ void loop()
       readSavedSettings(eepromAdress);
       if (activeSchedules.persistedInEEPROM == true)
       {
-        setSchedule(activeSchedules.weekNight.start, activeSchedules.weekNight.end, activeSchedules.weekDay.start, activeSchedules.weekDay.end, activeSchedules.dstActive, activeSchedules.weekendDay.start, activeSchedules.weekendDay.end, activeSchedules.weekendNight.start, activeSchedules.weekendNight.end);
+        setSchedule(activeSchedules.day, activeSchedules.night, activeSchedules.dstActive, activeSchedules.weekendDay, activeSchedules.weekendNight);
       }
 #ifdef DEBUG_LAMPOMATIC
       Serial.print("Exiting first run loop, firstRun value: ");
@@ -174,7 +197,6 @@ void loop()
       Serial.println(activeSchedules.persistedInEEPROM);
 #endif
     }
-    Alarm.delay(0);
 #ifdef DEBUG_LAMPOMATIC
     printScheduleAndTime();
 #endif
@@ -185,7 +207,15 @@ void loop()
 // HTTP Handlers
 void handleRoot()
 {
-  server.send(200, "text/html", "<form action=\"/time\" method=\"POST\">Day start: <input type=\"time\" name=\"dayStart\" value=\"" + activeSchedules.weekDay.start + "\"> - end: <input type=\"time\" name=\"dayEnd\"value=\"" + activeSchedules.weekDay.end + "\"><label for=\"dayIntensity\">Intensity (1-100):</label><input type=\"number\" id=\"dayIntensity\" name=\"dayIntensity\" min=\"1\" max=\"100\" value=\"" + activeSchedules.dayIntensity + "\"></br>Night start: <input type=\"time\" name=\"nightStart\" value=\"" + activeSchedules.weekNight.start + "\"> - end: <input type=\"time\" name=\"nightEnd\" value=\"" + activeSchedules.weekNight.end + "\"><label for=\"nightIntensity\">Intensity (1-100):</label><input type=\"number\" id=\"nightIntensity\" name=\"nightIntensity\" min=\"1\" max=\"100\" value=\"" + activeSchedules.nightIntensity + "\"></br><hr><p>Weekend schedule is optional. If omitted, regular schedule will be used.</p>Weekend day start: <input type=\"time\" name=\"weekendDayStart\" value=\"" + activeSchedules.weekendDay.start + "\"> - end: <input type=\"time\" name=\"weekendDayEnd\"value=\"" + activeSchedules.weekendDay.end + "\"></br>Weekend night start: <input type=\"time\" name=\"weekendNightStart\" value=\"" + activeSchedules.weekendNight.start + "\"> - end: <input type=\"time\" name=\"weekendNightEnd\"value=\"" + activeSchedules.weekendNight.end + "\"><hr></br><input type=\"checkbox\" name=\"dst\" id=\"dst\"><label for=\"dst\">Daylight savings time</label></br><input type=\"password\" name=\"gatekeeper\" placeholder=\"Key\"> - <input type=\"submit\" formmethod=\"post\" value=\"Submit\"></form>"); // Send HTTP status 200 (Ok) and send some text to the browser/client
+  String dayStartTime = getFormattedHourMinuteConcatenation(dayStart);
+  String dayEndTime = getFormattedHourMinuteConcatenation(dayEnd);
+  String nightStartTime = getFormattedHourMinuteConcatenation(nightStart);
+  String nightEndTime = getFormattedHourMinuteConcatenation(nightEnd);
+  String weekendDayStartTime = getFormattedHourMinuteConcatenation(weekendDayStart);
+  String weekendDayEndTime = getFormattedHourMinuteConcatenation(weekendDayEnd);
+  String weekendNightStartTime = getFormattedHourMinuteConcatenation(weekendNightStart);
+  String weekendNightEndTime = getFormattedHourMinuteConcatenation(weekendNightEnd);
+  server.send(200, "text/html", "<form action=\"/time\" method=\"POST\">Day start: <input type=\"time\" name=\"dayStart\" value=\"" + dayStartTime + "\"> - end: <input type=\"time\" name=\"dayEnd\"value=\"" + dayEndTime + "\"><label for=\"dayIntensity\">Intensity (1-100):</label><input type=\"number\" id=\"dayIntensity\" name=\"dayIntensity\" min=\"1\" max=\"100\" value=\"" + activeSchedules.dayIntensity + "\"></br>Night start: <input type=\"time\" name=\"nightStart\" value=\"" + nightStartTime + "\"> - end: <input type=\"time\" name=\"nightEnd\" value=\"" + nightEndTime + "\"><label for=\"nightIntensity\">Intensity (1-100):</label><input type=\"number\" id=\"nightIntensity\" name=\"nightIntensity\" min=\"1\" max=\"100\" value=\"" + activeSchedules.nightIntensity + "\"></br><hr><p>Weekend schedule is optional. If omitted, regular schedule will be used.</p>Weekend day start: <input type=\"time\" name=\"weekendDayStart\" value=\"" + weekendDayStartTime + "\"> - end: <input type=\"time\" name=\"weekendDayEnd\"value=\"" + weekendDayEndTime + "\"></br>Weekend night start: <input type=\"time\" name=\"weekendNightStart\" value=\"" + weekendNightStartTime + "\"> - end: <input type=\"time\" name=\"weekendNightEnd\"value=\"" + weekendNightEndTime + "\"><hr></br><input type=\"checkbox\" name=\"dst\" id=\"dst\"><label for=\"dst\">Daylight savings time</label></br><input type=\"password\" name=\"gatekeeper\" placeholder=\"Key\"> - <input type=\"submit\" formmethod=\"post\" value=\"Submit\"></form>");
 }
 
 void handleGetTime()
@@ -198,7 +228,7 @@ void handleGetTime()
   Serial.println(currentTime);
 #endif
 
-  server.send(200, "text/html; charset=utf-8", "<P>Current Time: " + currentTime + "</p><p>Day schedule: " + activeSchedules.weekDay.start + "-" + activeSchedules.weekDay.end + ", Intensity: " + activeSchedules.dayIntensity + "</p><p>Night schedule: " + activeSchedules.weekNight.start + "-" + activeSchedules.weekNight.end + ", Intensity: " + activeSchedules.nightIntensity + "</p><hr><p>Weekend day: " + activeSchedules.weekendDay.start + " - " + activeSchedules.weekendDay.end + "</p><p>Weekend night: " + activeSchedules.weekendNight.start + " - " + activeSchedules.weekendNight.end + "</p>");
+  server.send(200, "text/html; charset=utf-8", "<P>Current Time: " + currentTime + "</p><p>Day schedule: " + getFormattedHourMinuteConcatenation(dayStart) + "-" + getFormattedHourMinuteConcatenation(dayEnd) + ", Intensity: " + activeSchedules.dayIntensity + "</p><p>Night schedule: " + getFormattedHourMinuteConcatenation(nightStart) + "-" + getFormattedHourMinuteConcatenation(nightEnd) + ", Intensity: " + activeSchedules.nightIntensity + "</p><hr><p>Weekend day: " + getFormattedHourMinuteConcatenation(weekendDayStart) + " - " + getFormattedHourMinuteConcatenation(weekendDayEnd) + "</p><p>Weekend night: " + getFormattedHourMinuteConcatenation(weekendNightStart) + " - " + getFormattedHourMinuteConcatenation(weekendNightEnd) + "</p>");
 }
 
 void handlePostSchedule()
@@ -216,15 +246,38 @@ void handlePostSchedule()
       activeSchedules.dayIntensity = server.arg("dayIntensity").toInt();
 
       bool dst = server.hasArg("dst") && (server.arg("dst") == "on");
+      Schedule day;
+      day.startHour = server.arg("dayStart").substring(0, 2).toInt();
+      day.startMinute = server.arg("dayStart").substring(3).toInt();
+      day.endHour = server.arg("dayEnd").substring(0, 2).toInt();
+      day.endMinute = server.arg("dayEnd").substring(3).toInt();
+      Schedule night;
+      night.startHour = server.arg("nightStart").substring(0, 2).toInt();
+      night.startMinute = server.arg("nightStart").substring(3).toInt();
+      night.endHour = server.arg("nightEnd").substring(0, 2).toInt();
+      night.endMinute = server.arg("nightEnd").substring(3).toInt();
+      Schedule weekendDay;
+      weekendDay.startHour = -1;
+      Schedule weekendNight;
+      weekendNight.startHour = -1;
 
       if (serverHasOptionalArgs())
       {
-        setSchedule(server.arg("nightStart"), server.arg("nightEnd"), server.arg("dayStart"), server.arg("dayEnd"), dst, server.arg("weekendDayStart"), server.arg("weekendDayEnd"), server.arg("weekendNightStart"), server.arg("weekendNightEnd"));
+#ifdef DEBUG_LAMPOMATIC
+        Serial.println(server.arg("weekendDayStart"));
+#endif
+        weekendDay.startHour = server.arg("weekendDayStart").substring(0, 2).toInt();
+        weekendDay.startMinute = server.arg("weekendDayStart").substring(3).toInt();
+        weekendDay.endHour = server.arg("weekendDayEnd").substring(0, 2).toInt();
+        weekendDay.endMinute = server.arg("weekendDayEnd").substring(3).toInt();
+
+        weekendNight.startHour = server.arg("weekendNightStart").substring(0, 2).toInt();
+        weekendNight.startMinute = server.arg("weekendNightStart").substring(3).toInt();
+        weekendNight.endHour = server.arg("weekendNightEnd").substring(0, 2).toInt();
+        weekendNight.endMinute = server.arg("weekendNightEnd").substring(3).toInt();
       }
-      else
-      {
-        setSchedule(server.arg("nightStart"), server.arg("nightEnd"), server.arg("dayStart"), server.arg("dayEnd"), dst);
-      }
+
+      setSchedule(day, night, dst, weekendDay, weekendNight);
 
       currentStatePersisted = saveSettings(eepromAdress, activeSchedules);
       handleGetTime();
@@ -300,77 +353,69 @@ void handleDebugPost()
 // HTTP
 
 // Set-Get-Read schedule and timers.
-void setSchedule(String nightStart, String nightEnd, String dayStart, String dayEnd, bool dst, String weekendDayStart, String weekendDayEnd, String weekendNightStart, String weekendNightEnd)
+void setSchedule(Schedule day, Schedule night, bool dst, Schedule weekendDay, Schedule weekendNight)
 {
   if (activeSchedules.initialized == true)
   {
-    clearOldTimers(activeSchedules.timerIds, activeSchedules.usedTimers);
+    clearOldTimers(activeSchedules.day.timerIds, 2);
+    clearOldTimers(activeSchedules.night.timerIds, 2);
+    if (activeSchedules.weekendDay.startHour != -1)
+    {
+      clearOldTimers(activeSchedules.weekendDay.timerIds, 4);
+      clearOldTimers(activeSchedules.weekendNight.timerIds, 4);
+    }
   }
 
   activeSchedules.dstActive = dst;
   activeSchedules.persistedInEEPROM = false;
-  activeSchedules.weekDay.start = dayStart;
-  activeSchedules.weekDay.end = dayEnd;
-  activeSchedules.weekNight.start = nightStart;
-  activeSchedules.weekNight.end = nightEnd;
+  activeSchedules.day = day;
+  activeSchedules.night = night;
+  activeSchedules.weekendDay = weekendDay;
+  activeSchedules.weekendNight = weekendNight;
 
   dstOffsetInSeconds = dst == true ? 3600 : 0;
   timeClient.setTimeOffset(utcOffsetInSeconds + dstOffsetInSeconds);
   timeClient.update();
-  if (!(weekendDayStart.isEmpty() || weekendDayEnd.isEmpty() || weekendNightStart.isEmpty() || weekendNightEnd.isEmpty()))
-  {
-    activeSchedules.weekendDay.start = weekendDayStart;
-    activeSchedules.weekendDay.end = weekendDayEnd;
-    activeSchedules.weekendNight.start = weekendNightStart;
-    activeSchedules.weekendNight.end = weekendNightEnd;
-    setAlarms(true);
-  }
-  else
-  {
-    activeSchedules.weekendDay.start = "";
-    activeSchedules.weekendDay.end = "";
-    activeSchedules.weekendNight.start = "";
-    activeSchedules.weekendNight.end = "";
-    setAlarms(false);
-  }
+
+  setAlarms(weekendDay.startHour != -1);
+
   activeSchedules.initialized = true;
 }
 
 void setAlarms(bool weekendActive)
 {
-  int usedTimers = 0;
-  for (int i = 1; i <= 7; i++)
+  // Limited amount of RAM, must be smart here.
+  if (weekendActive)
   {
-    if (weekendActive == true && (i == 1 || i == 7) /* Sunday or Saturday */)
-    {
-      activeSchedules.timerIds[usedTimers++] = Alarm.alarmRepeat(static_cast<timeDayOfWeek_t>(i), activeSchedules.weekendDay.start.substring(0, 2).toInt(), activeSchedules.weekendDay.start.substring(3).toInt(), 0, startDay);
-      activeSchedules.timerIds[usedTimers++] = Alarm.alarmRepeat(static_cast<timeDayOfWeek_t>(i), activeSchedules.weekendDay.end.substring(0, 2).toInt(), activeSchedules.weekendDay.end.substring(3).toInt(), 0, endDay);
-      activeSchedules.timerIds[usedTimers++] = Alarm.alarmRepeat(static_cast<timeDayOfWeek_t>(i), activeSchedules.weekendNight.start.substring(0, 2).toInt(), activeSchedules.weekendNight.start.substring(3).toInt(), 0, startNight);
-      activeSchedules.timerIds[usedTimers++] = Alarm.alarmRepeat(static_cast<timeDayOfWeek_t>(i), activeSchedules.weekendNight.end.substring(0, 2).toInt(), activeSchedules.weekendNight.end.substring(3).toInt(), 0, endNight);
-    }
-    else
-    {
-      activeSchedules.timerIds[usedTimers++] = Alarm.alarmRepeat(static_cast<timeDayOfWeek_t>(i), activeSchedules.weekDay.start.substring(0, 2).toInt(), activeSchedules.weekDay.start.substring(3).toInt(), 0, startDay);
-      activeSchedules.timerIds[usedTimers++] = Alarm.alarmRepeat(static_cast<timeDayOfWeek_t>(i), activeSchedules.weekDay.end.substring(0, 2).toInt(), activeSchedules.weekDay.end.substring(3).toInt(), 0, endDay);
-      activeSchedules.timerIds[usedTimers++] = Alarm.alarmRepeat(static_cast<timeDayOfWeek_t>(i), activeSchedules.weekNight.start.substring(0, 2).toInt(), activeSchedules.weekNight.start.substring(3).toInt(), 0, startNight);
-      activeSchedules.timerIds[usedTimers++] = Alarm.alarmRepeat(static_cast<timeDayOfWeek_t>(i), activeSchedules.weekNight.end.substring(0, 2).toInt(), activeSchedules.weekNight.end.substring(3).toInt(), 0, endNight);
-    }
+    activeSchedules.weekendDay.timerIds[0] = Alarm.alarmRepeat(dowSaturday, activeSchedules.weekendDay.startHour, activeSchedules.weekendDay.startMinute, 0, startDay);
+    activeSchedules.weekendDay.timerIds[1] = Alarm.alarmRepeat(dowSaturday, activeSchedules.weekendDay.endHour, activeSchedules.weekendDay.endMinute, 0, endDay);
+    activeSchedules.weekendDay.timerIds[2] = Alarm.alarmRepeat(dowSunday, activeSchedules.weekendDay.startHour, activeSchedules.weekendDay.startMinute, 0, startDay);
+    activeSchedules.weekendDay.timerIds[3] = Alarm.alarmRepeat(dowSunday, activeSchedules.weekendDay.endHour, activeSchedules.weekendDay.endMinute, 0, endDay);
+
+    activeSchedules.weekendNight.timerIds[0] = Alarm.alarmRepeat(dowFriday, activeSchedules.weekendNight.startHour, activeSchedules.weekendNight.startMinute, 0, startNight);
+    activeSchedules.weekendNight.timerIds[1] = Alarm.alarmRepeat(dowSaturday, activeSchedules.weekendNight.endHour, activeSchedules.weekendNight.endMinute, 0, endNight);
+    activeSchedules.weekendNight.timerIds[2] = Alarm.alarmRepeat(dowSaturday, activeSchedules.weekendNight.startHour, activeSchedules.weekendNight.startMinute, 0, startNight);
+    activeSchedules.weekendNight.timerIds[3] = Alarm.alarmRepeat(dowSunday, activeSchedules.weekendNight.endHour, activeSchedules.weekendNight.endMinute, 0, endNight);
   }
-  activeSchedules.usedTimers = usedTimers;
+  activeSchedules.day.timerIds[0] = Alarm.alarmRepeat(activeSchedules.day.startHour, activeSchedules.day.startMinute, 0, startDay);
+  activeSchedules.day.timerIds[1] = Alarm.alarmRepeat(activeSchedules.day.endHour, activeSchedules.day.endMinute, 0, endDay);
+  activeSchedules.night.timerIds[0] = Alarm.alarmRepeat(activeSchedules.night.startHour, activeSchedules.night.startMinute, 0, startNight);
+  activeSchedules.night.timerIds[1] = Alarm.alarmRepeat(activeSchedules.night.endHour, activeSchedules.night.endMinute, 0, endNight);
 }
 
-void clearOldTimers(int timerIds[], int usedTimers)
+void clearOldTimers(int timerIds[], int size)
 {
 #ifdef DEBUG_LAMPOMATIC
   Serial.print("Clearing old timers");
-  for (int i = 0; i < usedTimers; i++)
+
+  for (int i = 0; i < size; i++)
   {
     Serial.print("ID: ");
     int timerID = timerIds[i];
     Serial.println(timerID);
   }
 #endif
-  for (int i = 0; i < usedTimers; i++)
+  for (int i = 0; i < size; i++)
   {
     Alarm.free(timerIds[i]);
   }
@@ -389,10 +434,10 @@ void readSavedSettings(int eepromAdress)
   if (savedSchedule.persistedInEEPROM == true)
   {
     Serial.print("Read successful.");
-    Serial.println("Read data, day: " + savedSchedule.weekDay.start + "-" + savedSchedule.weekDay.end);
-    Serial.println("Read data, night: " + savedSchedule.weekNight.start + "-" + savedSchedule.weekNight.start);
-    Serial.println("Read data, weekendDay: " + savedSchedule.weekendDay.start + "-" + savedSchedule.weekendDay.start);
-    Serial.println("Read data, weekendNight: " + savedSchedule.weekendNight.start + "-" + savedSchedule.weekendNight.end);
+    Serial.println("Read data, day: " + getFormattedHourMinuteConcatenation(dayStart) + "-" + getFormattedHourMinuteConcatenation(dayEnd));
+    Serial.println("Read data, night: " + getFormattedHourMinuteConcatenation(nightStart) + "-" + getFormattedHourMinuteConcatenation(nightEnd));
+    Serial.println("Read data, weekendDay: " + getFormattedHourMinuteConcatenation(weekendDayStart) + "-" + getFormattedHourMinuteConcatenation(weekendDayEnd));
+    Serial.println("Read data, weekendNight: " + getFormattedHourMinuteConcatenation(weekendNightStart) + "-:" + getFormattedHourMinuteConcatenation(weekendNightEnd));
     Serial.print("DST: ");
     Serial.println(savedSchedule.dstActive);
     Serial.print("Day brightness: ");
@@ -430,54 +475,133 @@ bool saveSettings(int eepromAdress, ScheduleContainer currentState)
   return saveOk;
 }
 
+void setTimerState()
+{
+  // Weekend baby.
+  if (weekday() == static_cast<int>(dowFriday) || weekday() == static_cast<int>(dowSaturday) || weekday() == static_cast<int>(dowSunday))
+  {
+    Alarm.disable(activeSchedules.night.timerIds[0]);
+    Alarm.disable(activeSchedules.night.timerIds[1]);
+
+    Alarm.disable(activeSchedules.day.timerIds[0]);
+    Alarm.disable(activeSchedules.day.timerIds[1]);
+  }
+  else // Not weekend. :-(
+  {
+    Alarm.enable(activeSchedules.night.timerIds[0]);
+    Alarm.enable(activeSchedules.night.timerIds[1]);
+
+    Alarm.enable(activeSchedules.day.timerIds[0]);
+    Alarm.enable(activeSchedules.day.timerIds[1]);
+  }
+}
+
 // Blinkenlights
-void startNight()
-{
-  int pwmOut = map(activeSchedules.nightIntensity, 0, 100, 0, 1023);
-  analogWrite(nightPin, pwmOut);
-}
-
-void endNight()
-{
-  digitalWrite(nightPin, LOW);
-}
-
 void startDay()
 {
   int pwmOut = map(activeSchedules.dayIntensity, 0, 100, 0, 1023);
   analogWrite(dayPin, pwmOut);
+  Alarm.delay(10);
 }
 
 void endDay()
 {
   digitalWrite(dayPin, LOW);
+  Alarm.delay(10);
 }
 
+void startNight()
+{
+  int pwmOut = map(activeSchedules.nightIntensity, 0, 100, 0, 1023);
+  analogWrite(nightPin, pwmOut);
+  Alarm.delay(10);
+}
+
+void endNight()
+{
+  digitalWrite(nightPin, LOW);
+  Alarm.delay(10);
+}
+
+String getFormattedHourMinuteConcatenation(scheduleType_t scheduleType)
+{
+  String hoursStr;
+  String minuteStr;
+  switch (scheduleType)
+  {
+  case dayStart:
+    hoursStr = activeSchedules.day.startHour < 10 ? "0" + String(activeSchedules.day.startHour) : String(activeSchedules.day.startHour);
+    minuteStr = activeSchedules.day.startMinute < 10 ? "0" + String(activeSchedules.day.startMinute) : String(activeSchedules.day.startMinute);
+    break;
+  case dayEnd:
+    hoursStr = activeSchedules.day.endHour < 10 ? "0" + String(activeSchedules.day.endHour) : String(activeSchedules.day.endHour);
+    minuteStr = activeSchedules.day.endMinute < 10 ? "0" + String(activeSchedules.day.endMinute) : String(activeSchedules.day.endMinute);
+    break;
+  case nightStart:
+    hoursStr = activeSchedules.night.startHour < 10 ? "0" + String(activeSchedules.night.startHour) : String(activeSchedules.night.startHour);
+    minuteStr = activeSchedules.night.startMinute < 10 ? "0" + String(activeSchedules.night.startMinute) : String(activeSchedules.night.startMinute);
+    break;
+  case nightEnd:
+    hoursStr = activeSchedules.night.endHour < 10 ? "0" + String(activeSchedules.night.endHour) : String(activeSchedules.night.endHour);
+    minuteStr = activeSchedules.night.endMinute < 10 ? "0" + String(activeSchedules.night.endMinute) : String(activeSchedules.night.endMinute);
+    break;
+  case weekendDayStart:
+    if (activeSchedules.weekendDay.startHour != -1)
+    {
+      hoursStr = activeSchedules.weekendDay.startHour < 10 ? "0" + String(activeSchedules.weekendDay.startHour) : String(activeSchedules.weekendDay.startHour);
+      minuteStr = activeSchedules.weekendDay.startMinute < 10 ? "0" + String(activeSchedules.weekendDay.startMinute) : String(activeSchedules.weekendDay.startMinute);
+    }
+    break;
+  case weekendDayEnd:
+    if (activeSchedules.weekendDay.startHour != -1)
+    {
+      hoursStr = activeSchedules.weekendDay.endHour < 10 ? "0" + String(activeSchedules.weekendDay.endHour) : String(activeSchedules.weekendDay.endHour);
+      minuteStr = activeSchedules.weekendDay.endMinute < 10 ? "0" + String(activeSchedules.weekendDay.endMinute) : String(activeSchedules.weekendDay.endMinute);
+    }
+    break;
+  case weekendNightStart:
+    if (activeSchedules.weekendNight.startHour != -1)
+    {
+      hoursStr = activeSchedules.weekendNight.startHour < 10 ? "0" + String(activeSchedules.weekendNight.startHour) : String(activeSchedules.weekendNight.startHour);
+      minuteStr = activeSchedules.weekendNight.startMinute < 10 ? "0" + String(activeSchedules.weekendNight.startMinute) : String(activeSchedules.weekendNight.startMinute);
+    }
+    break;
+  case weekendNightEnd:
+    if (activeSchedules.weekendNight.startHour != -1)
+    {
+      hoursStr = activeSchedules.weekendNight.endHour < 10 ? "0" + String(activeSchedules.weekendNight.endHour) : String(activeSchedules.weekendNight.endHour);
+      minuteStr = activeSchedules.weekendNight.endMinute < 10 ? "0" + String(activeSchedules.weekendNight.endMinute) : String(activeSchedules.weekendNight.endMinute);
+    }
+    break;
+  }
+
+  return hoursStr + ":" + minuteStr;
+}
 // Print some debug stuff to serial
 #ifdef DEBUG_LAMPOMATIC
 void printScheduleAndTime()
 {
   Serial.print("Day schedule: ");
-  Serial.println(activeSchedules.weekDay.start);
+  Serial.println(getFormattedHourMinuteConcatenation(dayStart));
   Serial.println(" - ");
-  Serial.println(activeSchedules.weekDay.end);
+  Serial.println(getFormattedHourMinuteConcatenation(dayEnd));
   Serial.print("Night schedule: ");
-  Serial.println(activeSchedules.weekNight.start);
+  Serial.println(getFormattedHourMinuteConcatenation(nightStart));
   Serial.println(" - ");
-  Serial.println(activeSchedules.weekNight.end);
+  Serial.println(getFormattedHourMinuteConcatenation(nightEnd));
 
   Serial.print("Weekend day schedule: ");
-  Serial.println(activeSchedules.weekendDay.start);
+  Serial.println(getFormattedHourMinuteConcatenation(weekendDayStart));
   Serial.println(" - ");
-  Serial.println(activeSchedules.weekendDay.end);
+  Serial.println(getFormattedHourMinuteConcatenation(weekendDayEnd));
 
   Serial.print("Weekend night schedule: ");
-  Serial.println(activeSchedules.weekendNight.start);
+  Serial.println(getFormattedHourMinuteConcatenation(weekendNightStart));
   Serial.println(" - ");
-  Serial.println(activeSchedules.weekendNight.end);
+  Serial.println(getFormattedHourMinuteConcatenation(weekendNightEnd));
 
-  Serial.print("TimeClient.GetDay");
-  Serial.println(timeClient.getDay());
+  Serial.print("WeekDay");
+  Serial.println(weekday());
   Serial.print(daysOfTheWeek[timeClient.getDay()]);
   Serial.print(", ");
   Serial.println(timeClient.getFormattedTime());
@@ -502,9 +626,6 @@ void printScheduleAndTime()
 
   Serial.print("Current state saved to EEPROM: ");
   Serial.println(currentStatePersisted == true ? "YES" : "NO");
-
-  Serial.print("Used timers: ");
-  Serial.println(activeSchedules.usedTimers);
 
   Serial.print("Activeschedules init: ");
   Serial.println(activeSchedules.initialized);
