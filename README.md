@@ -43,7 +43,8 @@ Well, my kids keep waking up at ungodly hours, wandering into my bedroom and wak
 Since they can´t read the clock yet, now they can just glance up at the soooothing red light coming from the Nightlight-O-Matic and roll-over and go back to sleep. (Or, if its shining bright and blue, come wake me up).
 
 ## Changelog:
-
+- Version 1.2.1 - Changed how state gets set and updated from alarms. They now set a state instead of setting pins directly, and this state gets saved to eeprom on every change (so the same state gets activated on power cycling).
+Also changed how, and when, stuff gets read from eeprom on startup. It now waits for time to get set before trying to set alarms.
 - Version 1.1.0 - Re-wrote basically everything to better handle alarms. Used to many alarms (and RAM) previously, causing some alarms to not be saved.
 - Version 1.0.0 - Initial commit.
 

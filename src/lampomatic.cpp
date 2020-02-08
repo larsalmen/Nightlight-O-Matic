@@ -2,8 +2,8 @@
     Name    : Nightlightomatic
     Author  : Lars Almén
     Created : 2020-01-20
-    Last Modified: 2020-02-04
-    Version : 1.2.0
+    Last Modified: 2020-02-08
+    Version : 1.2.1
     Notes   : An ESP controlled nightlight, that toggles output pins depending on a set schedule.
               Schedule is exposed through an html gui, served by a http server running on the ESP. Settings are persisted on (emulated) EEPROM.
     License : This software is available under MIT License.
@@ -82,8 +82,11 @@ long dstOffsetInSeconds = 0;
 // Weekdays, change according to language (Söndag = Sunday, Måndag = Monday etc etc.).
 const char daysOfTheWeek[7][12] = {"Söndag", "Måndag", "Tisdag", "Onsdag", "Torsdag", "Fredag", "Lördag"};
 
-unsigned long previousMillis = 0;
-const long interval = 60000;
+unsigned long previousNtpUpdateMillis = 0;
+const long updateNtpIntervall = 60000;
+unsigned long previousServiceAlarmsMillis = 0;
+const long serviceAlarmsIntervall = 5000;
+
 bool firstRun = true;
 
 // Define NTP Client to get time
@@ -164,10 +167,8 @@ void setup()
 
 void loop()
 {
-  // Continously call Alarm.delay to force the ESP to check if time for the alarm has passed.
-  Alarm.delay(50);
   // First run
-  if (firstRun == true)
+  if (firstRun == true && timeStatus() == timeSet)
   {
 #ifdef DEBUG_LAMPOMATIC
     Serial.print("Entering first run loop, firstRun value: ");
@@ -190,19 +191,12 @@ void loop()
 #endif
   }
 
-  // Loop, update time etc.
   unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis >= interval)
+  // Service alarms.
+  if (timeStatus() == timeSet && (currentMillis - previousServiceAlarmsMillis >= serviceAlarmsIntervall))
   {
-    // Save last run
-    previousMillis = currentMillis;
+    previousServiceAlarmsMillis = currentMillis;
 
-    timeClient.update();
-    setTime(timeClient.getEpochTime());
-#ifdef DEBUG_LAMPOMATIC
-    printScheduleAndTime();
-#endif
-    // Set outpuState if there is and initialized schedule in RAM
     if (activeSchedules.initialized)
     {
       // Enable or disable timers deending on day and if weekend is active.
@@ -212,6 +206,19 @@ void loop()
       }
       setOutputState();
     }
+
+    Alarm.delay(50);
+  }
+
+  // Update the time from NTP source.
+  if (currentMillis - previousNtpUpdateMillis >= updateNtpIntervall)
+  {
+    previousNtpUpdateMillis = currentMillis;
+    timeClient.update();
+    setTime(timeClient.getEpochTime());
+#ifdef DEBUG_LAMPOMATIC
+    printScheduleAndTime();
+#endif
   }
   server.handleClient();
 }
@@ -367,6 +374,41 @@ void handleDebugPost()
 // Set-Get-Read schedule and timers.
 void setSchedule(Schedule day, Schedule night, bool dst, Schedule weekendDay, Schedule weekendNight)
 {
+#ifdef DEBUG_LAMPOMATIC
+  Serial.println("---- In setSchedule ------ ");
+  Serial.print("Day: ");
+  Serial.print(day.startHour);
+  Serial.print(":");
+  Serial.print(day.startMinute);
+  Serial.print(" - ");
+  Serial.print(day.endHour);
+  Serial.print(":");
+  Serial.println(day.endMinute);
+  Serial.print("Night: ");
+  Serial.print(night.startHour);
+  Serial.print(":");
+  Serial.print(night.startMinute);
+  Serial.print(" - ");
+  Serial.print(night.endHour);
+  Serial.print(":");
+  Serial.println(night.endMinute);
+  Serial.print("Weekend day: ");
+  Serial.print(weekendDay.startHour);
+  Serial.print(":");
+  Serial.print(weekendDay.startMinute);
+  Serial.print(" - ");
+  Serial.print(weekendDay.endHour);
+  Serial.print(":");
+  Serial.println(weekendDay.endMinute);
+  Serial.print("Weekend night: ");
+  Serial.print(weekendNight.startHour);
+  Serial.print(":");
+  Serial.print(weekendNight.startMinute);
+  Serial.print(" - ");
+  Serial.print(weekendNight.endHour);
+  Serial.print(":");
+  Serial.println(weekendNight.endMinute);
+#endif
   if (activeSchedules.initialized == true)
   {
     clearOldTimers(activeSchedules.day.timerIds, 2);
@@ -392,6 +434,9 @@ void setSchedule(Schedule day, Schedule night, bool dst, Schedule weekendDay, Sc
   setAlarms(weekendDay.startHour != -1);
 
   activeSchedules.initialized = true;
+  #ifdef DEBUG_LAMPOMATIC
+  Serial.println("----- Exiting setSchedule -------");
+  #endif
 }
 
 void setAlarms(bool weekendActive)
@@ -424,12 +469,36 @@ void setAlarms(bool weekendActive)
   activeSchedules.day.timerIds[1] = Alarm.alarmRepeat(activeSchedules.day.endHour, activeSchedules.day.endMinute, 0, endDay);
   activeSchedules.night.timerIds[0] = Alarm.alarmRepeat(activeSchedules.night.startHour, activeSchedules.night.startMinute, 0, startNight);
   activeSchedules.night.timerIds[1] = Alarm.alarmRepeat(activeSchedules.night.endHour, activeSchedules.night.endMinute, 0, endNight);
+#ifdef DEBUG_LAMPOMATIC
+  Serial.println("---- In setAlarms ---- ");
+  Serial.println("Day TimerIds");
+  for (size_t i = 0; i < 2; i++)
+  {
+    Serial.println(activeSchedules.day.timerIds[i]);
+  }
+  Serial.println("Night TimerIds");
+  for (size_t i = 0; i < 2; i++)
+  {
+    Serial.println(activeSchedules.night.timerIds[i]);
+  }
+  Serial.println("Weekend day TimerIds");
+  for (size_t i = 0; i < 6; i++)
+  {
+    Serial.println(activeSchedules.weekendDay.timerIds[i]);
+  }
+  Serial.println("Weekend night TimerIds");
+  for (size_t i = 0; i < 5; i++)
+  {
+    Serial.println(activeSchedules.weekendNight.timerIds[i]);
+  }
+  Serial.println("---- Exiting setAlarms ---- ");
+#endif
 }
 
 void clearOldTimers(int timerIds[], int size)
 {
 #ifdef DEBUG_LAMPOMATIC
-  Serial.print("Clearing old timers");
+  Serial.println("Clearing old timers");
 
   for (int i = 0; i < size; i++)
   {
@@ -453,14 +522,20 @@ void readSavedSettings(int eepromAdress)
 #endif
   StateContainer savedSchedule;
   savedSchedule = EEPROM.get(eepromAdress, savedSchedule);
+  if (savedSchedule.persistedInEEPROM == true)
+  {
+    savedSchedule.initialized = false;
+    dstOffsetInSeconds = savedSchedule.dstActive == true ? 3600 : 0;
+    activeSchedules = savedSchedule;
+  }
 #ifdef DEBUG_LAMPOMATIC
   if (savedSchedule.persistedInEEPROM == true)
   {
-    Serial.print("Read successful.");
+    Serial.println("Read successful.");
     Serial.println("Read data, day: " + getFormattedHourMinuteConcatenation(dayStart) + "-" + getFormattedHourMinuteConcatenation(dayEnd));
     Serial.println("Read data, night: " + getFormattedHourMinuteConcatenation(nightStart) + "-" + getFormattedHourMinuteConcatenation(nightEnd));
     Serial.println("Read data, weekendDay: " + getFormattedHourMinuteConcatenation(weekendDayStart) + "-" + getFormattedHourMinuteConcatenation(weekendDayEnd));
-    Serial.println("Read data, weekendNight: " + getFormattedHourMinuteConcatenation(weekendNightStart) + "-:" + getFormattedHourMinuteConcatenation(weekendNightEnd));
+    Serial.println("Read data, weekendNight: " + getFormattedHourMinuteConcatenation(weekendNightStart) + "-" + getFormattedHourMinuteConcatenation(weekendNightEnd));
     Serial.print("DST: ");
     Serial.println(savedSchedule.dstActive);
     Serial.print("Day brightness: ");
@@ -473,19 +548,48 @@ void readSavedSettings(int eepromAdress)
     Serial.println("Failed to read data from EEPROM.");
   }
 #endif
-  if (savedSchedule.persistedInEEPROM == true)
-  {
-    dstOffsetInSeconds = savedSchedule.dstActive == true ? 3600 : 0;
-    activeSchedules = savedSchedule;
-  }
 }
 
 bool saveSettings(int eepromAdress, StateContainer currentState)
 {
   StateContainer toSave = currentState;
 #ifdef DEBUG_LAMPOMATIC
-  Serial.print("Starting save to eeprom adress: ");
-  Serial.println(eepromAdress);
+  Serial.println("----- In saveSettings ------");
+  Serial.println("Starting save to eeprom adress: ");
+  Serial.print(eepromAdress);
+  Serial.println("Schedules to save: ");
+  Serial.print("Day: ");
+  Serial.print(toSave.day.startHour);
+  Serial.print(":");
+  Serial.print(toSave.day.startMinute);
+  Serial.print(" - ");
+  Serial.print(toSave.day.endHour);
+  Serial.print(":");
+  Serial.println(toSave.day.endMinute);
+  Serial.print("Night: ");
+  Serial.print(toSave.night.startHour);
+  Serial.print(":");
+  Serial.print(toSave.night.startMinute);
+  Serial.print(" - ");
+  Serial.print(toSave.night.endHour);
+  Serial.print(":");
+  Serial.println(toSave.night.endMinute);
+  Serial.print("Weekend day: ");
+  Serial.print(toSave.weekendDay.startHour);
+  Serial.print(":");
+  Serial.print(toSave.weekendDay.startMinute);
+  Serial.print(" - ");
+  Serial.print(toSave.weekendDay.endHour);
+  Serial.print(":");
+  Serial.println(toSave.weekendDay.endMinute);
+  Serial.print("Weekend night: ");
+  Serial.print(toSave.weekendNight.startHour);
+  Serial.print(":");
+  Serial.print(toSave.weekendNight.startMinute);
+  Serial.print(" - ");
+  Serial.print(toSave.weekendNight.endHour);
+  Serial.print(":");
+  Serial.println(toSave.weekendNight.endMinute);
 #endif
   toSave.persistedInEEPROM = true;
   EEPROM.put(eepromAdress, toSave);
@@ -494,6 +598,8 @@ bool saveSettings(int eepromAdress, StateContainer currentState)
 #ifdef DEBUG_LAMPOMATIC
   Serial.print("Save status: ");
   Serial.println(saveOk == true ? "OK" : "FAILED");
+  Serial.println("----- Exiting saveSettings ------");
+
 #endif
   return saveOk;
 }
@@ -546,6 +652,16 @@ void endNight()
 
 void setOutputState()
 {
+#ifdef DEBUG_LAMPOMATIC
+  Serial.print("currentState.dayActive: ");
+  Serial.println(activeSchedules.currentState.dayActive);
+  Serial.print("currentState.nightActive: ");
+  Serial.println(activeSchedules.currentState.nightActive);
+  Serial.print("dayIntensity: ");
+  Serial.println(activeSchedules.dayIntensity);
+  Serial.print("nightIntensity: ");
+  Serial.println(activeSchedules.nightIntensity);
+#endif
   if (activeSchedules.currentState.dayActive)
   {
     int pwmOut = map(activeSchedules.dayIntensity, 0, 100, 0, 1023);
@@ -660,12 +776,12 @@ void printScheduleAndTime()
   Serial.println(dstOffsetInSeconds);
 
   Serial.print("nightActive status: ");
-  Serial.println(nightActive);
+  Serial.println(activeSchedules.currentState.nightActive);
   Serial.print("Night-pin PWM setting: ");
   Serial.println(activeSchedules.nightIntensity);
 
   Serial.print("dayActive status: ");
-  Serial.println(dayActive);
+  Serial.println(activeSchedules.currentState.dayActive);
   Serial.print("Day-pin PWM setting: ");
   Serial.println(activeSchedules.dayIntensity);
 
